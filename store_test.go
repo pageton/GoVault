@@ -3,7 +3,9 @@ package govault
 import (
 	"context"
 	"errors"
+	"fmt"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 )
@@ -151,5 +153,92 @@ func TestTwoStoresSameFile(t *testing.T) {
 	}
 	if got, err := a.Get(ctx, "from-b"); err != nil || string(got) != "2" {
 		t.Fatalf("Get via A: got %q, %v", got, err)
+	}
+}
+
+func TestOpenFileURI(t *testing.T) {
+	path := "file:" + filepath.Join(t.TempDir(), "uri.db")
+	s, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open with file: URI: %v", err)
+	}
+	defer s.Close()
+
+	ctx := context.Background()
+	if err := s.Set(ctx, "k", []byte("v")); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	if got, err := s.Get(ctx, "k"); err != nil || string(got) != "v" {
+		t.Fatalf("Get: got %q, %v", got, err)
+	}
+}
+
+func TestWithMaxOpenConns(t *testing.T) {
+	s := openTest(t, WithMaxOpenConns(2))
+	ctx := context.Background()
+
+	var wg sync.WaitGroup
+	for g := 0; g < 4; g++ {
+		wg.Add(1)
+		go func(g int) {
+			defer wg.Done()
+			for i := 0; i < 25; i++ {
+				key := fmt.Sprintf("g%d:%02d", g, i)
+				if err := s.Set(ctx, key, []byte("v")); err != nil {
+					t.Errorf("Set %s: %v", key, err)
+					return
+				}
+				if _, err := s.Get(ctx, key); err != nil {
+					t.Errorf("Get %s: %v", key, err)
+					return
+				}
+			}
+		}(g)
+	}
+	wg.Wait()
+
+	if n, err := s.Count(ctx, ""); err != nil || n != 100 {
+		t.Fatalf("Count: got %d, %v; want 100", n, err)
+	}
+}
+
+func TestContextCancellation(t *testing.T) {
+	s := openTest(t)
+	ctx := context.Background()
+	if err := s.Set(ctx, "k", []byte("v")); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+
+	cancelled, cancel := context.WithCancel(ctx)
+	cancel()
+
+	if _, err := s.Get(cancelled, "k"); !errors.Is(err, context.Canceled) {
+		t.Errorf("Get with cancelled context: got %v", err)
+	}
+	if err := s.Set(cancelled, "k2", nil); !errors.Is(err, context.Canceled) {
+		t.Errorf("Set with cancelled context: got %v", err)
+	}
+	if _, err := s.Delete(cancelled, "k"); !errors.Is(err, context.Canceled) {
+		t.Errorf("Delete with cancelled context: got %v", err)
+	}
+	if _, err := s.Exists(cancelled, "k"); !errors.Is(err, context.Canceled) {
+		t.Errorf("Exists with cancelled context: got %v", err)
+	}
+	if _, err := s.Keys(cancelled, ""); !errors.Is(err, context.Canceled) {
+		t.Errorf("Keys with cancelled context: got %v", err)
+	}
+	if err := s.Scan(cancelled, "", func(string, []byte) bool { return true }); !errors.Is(err, context.Canceled) {
+		t.Errorf("Scan with cancelled context: got %v", err)
+	}
+	if _, err := s.Count(cancelled, ""); !errors.Is(err, context.Canceled) {
+		t.Errorf("Count with cancelled context: got %v", err)
+	}
+	if err := s.Batch(cancelled, func(tx *Tx) error { return nil }); !errors.Is(err, context.Canceled) {
+		t.Errorf("Batch with cancelled context: got %v", err)
+	}
+
+	// A cancelled call must not poison the pool for later operations.
+	if got, err := s.Get(ctx, "k"); err != nil || string(got) != "v" {
+		t.Errorf("Get after cancelled operations: got %q, %v", got, err)
 	}
 }
