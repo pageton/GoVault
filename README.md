@@ -215,6 +215,24 @@ That's roughly 240k reads/s single-threaded, 370k/s across goroutines, and
 ~50k writes/s single-threaded (writes serialize on SQLite's single write
 lock, as in any SQLite-backed store).
 
+## Examples
+
+Runnable programs live in [`examples/`](examples/), one per feature area:
+
+| Example | Shows |
+|---|---|
+| [`basic`](examples/basic/main.go) | open/close, CRUD, upsert, delete counts, reopen persistence |
+| [`ttl`](examples/ttl/main.go) | TTL expiry timeline, lazy expiration, TTL-stripping overwrite |
+| [`batch-scan`](examples/batch-scan/main.go) | atomic Batch commit & rollback, ordered scans, early stop |
+| [`concurrent`](examples/concurrent/main.go) | parallel writers, readers, and scanners on one Store |
+| [`customdriver`](examples/customdriver/main.go) | WithDriver + Attach, the WAL guard, driver DSN recipes |
+
+Run any of them with, e.g.:
+
+```sh
+go run github.com/pageton/GoVault/examples/basic
+```
+
 ## Testing
 
 ```sh

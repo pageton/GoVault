@@ -21,4 +21,9 @@ jobs:
           go-version: ${{ matrix.go }}
       - run: go vet ./...
       - run: go test -race -count=1 ./...
+      - run: go run ./examples/basic
+      - run: go run ./examples/batch-scan
+      - run: go run ./examples/concurrent
+      - run: go run ./examples/customdriver
+      - run: go run ./examples/ttl
       - run: go test -run '^$' -bench . -benchmem -count=1 ./...
