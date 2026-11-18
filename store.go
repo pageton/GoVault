@@ -58,8 +58,9 @@ var schemaStatements = []string{
 // Store is a persistent key-value store backed by one SQLite database.
 // All methods are safe for concurrent use by multiple goroutines.
 type Store struct {
-	db  *sql.DB
-	cfg config
+	db    *sql.DB
+	stmts *stmtSet
+	cfg   config
 
 	closeOnce sync.Once
 	closed    atomic.Bool
@@ -107,6 +108,12 @@ func Open(path string, opts ...Option) (*Store, error) {
 			return nil, fmt.Errorf("govault: initialize schema: %w", err)
 		}
 	}
+	stmts, err := prepareStmts(ctx, db)
+	if err != nil {
+		db.Close()
+		return nil, fmt.Errorf("govault: prepare statements: %w", err)
+	}
+	s.stmts = stmts
 	_, _ = s.purgeExpired(ctx) // best effort: keys that expired while closed
 
 	if cfg.janitorEnabled {
@@ -126,6 +133,7 @@ func (s *Store) Close() error {
 			<-s.janitorDone
 		}
 		s.closed.Store(true)
+		s.stmts.close()
 		s.checkpoint()
 		err = s.db.Close()
 	})

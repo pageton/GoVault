@@ -9,11 +9,15 @@ import (
 )
 
 // runner is implemented by both *sql.DB and *sql.Tx, letting Store and Tx
-// share a single implementation of every operation.
+// share one implementation of the streaming and counting operations.
 type runner interface {
 	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
 	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
-	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+}
+
+// preparer is implemented by both *sql.DB and *sql.Tx.
+type preparer interface {
+	PrepareContext(ctx context.Context, query string) (*sql.Stmt, error)
 }
 
 // aliveCond matches rows whose TTL has not elapsed yet. Its argument is the
@@ -31,6 +35,54 @@ const (
 
 func nowNanos() int64 { return time.Now().UnixNano() }
 
+// stmtSet holds prepared statements for the point operations, which are the
+// hot path: reusing them lets every connection skip re-compiling the SQL.
+type stmtSet struct {
+	get    *sql.Stmt
+	set    *sql.Stmt
+	del    *sql.Stmt
+	exists *sql.Stmt
+}
+
+func prepareStmts(ctx context.Context, p preparer) (*stmtSet, error) {
+	var ss stmtSet
+	prepare := func(dst **sql.Stmt, query string) error {
+		stmt, err := p.PrepareContext(ctx, query)
+		if err != nil {
+			return err
+		}
+		*dst = stmt
+		return nil
+	}
+	if err := prepare(&ss.get, getSQL); err != nil {
+		return nil, err
+	}
+	if err := prepare(&ss.set, setSQL); err != nil {
+		ss.close()
+		return nil, err
+	}
+	if err := prepare(&ss.del, deleteSQL); err != nil {
+		ss.close()
+		return nil, err
+	}
+	if err := prepare(&ss.exists, existsSQL); err != nil {
+		ss.close()
+		return nil, err
+	}
+	return &ss, nil
+}
+
+func (ss *stmtSet) close() {
+	if ss == nil {
+		return
+	}
+	for _, stmt := range []*sql.Stmt{ss.get, ss.set, ss.del, ss.exists} {
+		if stmt != nil {
+			_ = stmt.Close()
+		}
+	}
+}
+
 // Get returns the value stored under key. The returned slice is owned by the
 // caller. It returns ErrKeyNotFound if the key was never set or its TTL has
 // already elapsed.
@@ -38,7 +90,7 @@ func (s *Store) Get(ctx context.Context, key string) ([]byte, error) {
 	if err := s.errClosed(); err != nil {
 		return nil, err
 	}
-	return getValue(ctx, s.db, key)
+	return getValue(ctx, s.stmts, key)
 }
 
 // Set stores value under key, overwriting any previous value and TTL. A nil
@@ -49,7 +101,7 @@ func (s *Store) Set(ctx context.Context, key string, value []byte, ttl ...time.D
 	if err := s.errClosed(); err != nil {
 		return err
 	}
-	return setValue(ctx, s.db, key, value, ttl...)
+	return setValue(ctx, s.stmts, key, value, ttl...)
 }
 
 // Delete removes keys and returns how many of them existed (expired keys
@@ -63,12 +115,12 @@ func (s *Store) Delete(ctx context.Context, keys ...string) (int64, error) {
 	case 0:
 		return 0, nil
 	case 1:
-		return deleteKeys(ctx, s.db, keys...)
+		return deleteKeys(ctx, s.stmts, keys...)
 	default:
 		var n int64
 		err := s.Batch(ctx, func(tx *Tx) error {
 			var derr error
-			n, derr = deleteKeys(ctx, tx.tx, keys...)
+			n, derr = deleteKeys(ctx, tx.stmts, keys...)
 			return derr
 		})
 		return n, err
@@ -80,7 +132,7 @@ func (s *Store) Exists(ctx context.Context, key string) (bool, error) {
 	if err := s.errClosed(); err != nil {
 		return false, err
 	}
-	return existsValue(ctx, s.db, key)
+	return existsValue(ctx, s.stmts, key)
 }
 
 // Keys returns all live keys that start with prefix, in lexicographic byte
@@ -90,15 +142,7 @@ func (s *Store) Keys(ctx context.Context, prefix string) ([]string, error) {
 	if err := s.errClosed(); err != nil {
 		return nil, err
 	}
-	var keys []string
-	err := iterateKeys(ctx, s.db, prefix, func(key string) error {
-		keys = append(keys, key)
-		return nil
-	})
-	if err != nil {
-		return nil, err
-	}
-	return keys, nil
+	return collectKeys(ctx, s.db, prefix)
 }
 
 // Scan iterates live entries whose key starts with prefix, in lexicographic
@@ -109,12 +153,7 @@ func (s *Store) Scan(ctx context.Context, prefix string, fn func(key string, val
 	if err := s.errClosed(); err != nil {
 		return err
 	}
-	if fn == nil {
-		return errors.New("govault: Scan requires a non-nil function")
-	}
-	return iterateEntries(ctx, s.db, prefix, func(key string, value []byte) (bool, error) {
-		return fn(key, value), nil
-	})
+	return scanPrefix(ctx, s.db, prefix, fn)
 }
 
 // Count returns how many live keys start with prefix. An empty prefix counts
@@ -126,12 +165,12 @@ func (s *Store) Count(ctx context.Context, prefix string) (int64, error) {
 	return countPrefix(ctx, s.db, prefix)
 }
 
-// getValue, setValue, and friends implement the operations against any runner
-// so Store and Tx do not duplicate SQL.
+// getValue, setValue, and friends implement the operations once so Store and
+// Tx do not duplicate SQL.
 
-func getValue(ctx context.Context, r runner, key string) ([]byte, error) {
+func getValue(ctx context.Context, ss *stmtSet, key string) ([]byte, error) {
 	var value []byte
-	err := r.QueryRowContext(ctx, getSQL, key, nowNanos()).Scan(&value)
+	err := ss.get.QueryRowContext(ctx, key, nowNanos()).Scan(&value)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrKeyNotFound
 	}
@@ -141,7 +180,7 @@ func getValue(ctx context.Context, r runner, key string) ([]byte, error) {
 	return value, nil
 }
 
-func setValue(ctx context.Context, r runner, key string, value []byte, ttl ...time.Duration) error {
+func setValue(ctx context.Context, ss *stmtSet, key string, value []byte, ttl ...time.Duration) error {
 	if value == nil {
 		value = []byte{} // the value column is NOT NULL
 	}
@@ -149,16 +188,16 @@ func setValue(ctx context.Context, r runner, key string, value []byte, ttl ...ti
 	if len(ttl) > 0 {
 		expiresAt = time.Now().Add(ttl[0]).UnixNano()
 	}
-	if _, err := r.ExecContext(ctx, setSQL, key, value, expiresAt); err != nil {
+	if _, err := ss.set.ExecContext(ctx, key, value, expiresAt); err != nil {
 		return fmt.Errorf("govault: set %q: %w", key, err)
 	}
 	return nil
 }
 
-func deleteKeys(ctx context.Context, r runner, keys ...string) (int64, error) {
+func deleteKeys(ctx context.Context, ss *stmtSet, keys ...string) (int64, error) {
 	var total int64
 	for _, key := range keys {
-		res, err := r.ExecContext(ctx, deleteSQL, key)
+		res, err := ss.del.ExecContext(ctx, key)
 		if err != nil {
 			return total, fmt.Errorf("govault: delete %q: %w", key, err)
 		}
@@ -169,9 +208,9 @@ func deleteKeys(ctx context.Context, r runner, keys ...string) (int64, error) {
 	return total, nil
 }
 
-func existsValue(ctx context.Context, r runner, key string) (bool, error) {
+func existsValue(ctx context.Context, ss *stmtSet, key string) (bool, error) {
 	var one int
-	err := r.QueryRowContext(ctx, existsSQL, key, nowNanos()).Scan(&one)
+	err := ss.exists.QueryRowContext(ctx, key, nowNanos()).Scan(&one)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
 	}
@@ -181,35 +220,31 @@ func existsValue(ctx context.Context, r runner, key string) (bool, error) {
 	return true, nil
 }
 
-func countPrefix(ctx context.Context, r runner, prefix string) (int64, error) {
-	query, args := prefixQuery("SELECT COUNT(*) FROM kv", prefix)
-	var n int64
-	if err := r.QueryRowContext(ctx, query, args...).Scan(&n); err != nil {
-		return 0, fmt.Errorf("govault: count %q: %w", prefix, err)
-	}
-	return n, nil
-}
-
-func iterateKeys(ctx context.Context, r runner, prefix string, fn func(key string) error) error {
+func collectKeys(ctx context.Context, r runner, prefix string) ([]string, error) {
 	query, args := prefixQuery("SELECT key FROM kv", prefix)
 	rows, err := r.QueryContext(ctx, query, args...)
 	if err != nil {
-		return fmt.Errorf("govault: keys %q: %w", prefix, err)
+		return nil, fmt.Errorf("govault: keys %q: %w", prefix, err)
 	}
 	defer rows.Close()
+	var keys []string
 	for rows.Next() {
 		var key string
 		if err := rows.Scan(&key); err != nil {
-			return fmt.Errorf("govault: keys %q: %w", prefix, err)
+			return nil, fmt.Errorf("govault: keys %q: %w", prefix, err)
 		}
-		if err := fn(key); err != nil {
-			return err
-		}
+		keys = append(keys, key)
 	}
-	return rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("govault: keys %q: %w", prefix, err)
+	}
+	return keys, nil
 }
 
-func iterateEntries(ctx context.Context, r runner, prefix string, fn func(key string, value []byte) (bool, error)) error {
+func scanPrefix(ctx context.Context, r runner, prefix string, fn func(key string, value []byte) bool) error {
+	if fn == nil {
+		return errors.New("govault: Scan requires a non-nil function")
+	}
 	query, args := prefixQuery("SELECT key, value FROM kv", prefix)
 	rows, err := r.QueryContext(ctx, query, args...)
 	if err != nil {
@@ -222,15 +257,20 @@ func iterateEntries(ctx context.Context, r runner, prefix string, fn func(key st
 		if err := rows.Scan(&key, &value); err != nil {
 			return fmt.Errorf("govault: scan %q: %w", prefix, err)
 		}
-		keep, err := fn(key, value)
-		if err != nil {
-			return err
-		}
-		if !keep {
+		if !fn(key, value) {
 			return nil
 		}
 	}
 	return rows.Err()
+}
+
+func countPrefix(ctx context.Context, r runner, prefix string) (int64, error) {
+	query, args := prefixQuery("SELECT COUNT(*) FROM kv", prefix)
+	var n int64
+	if err := r.QueryRowContext(ctx, query, args...).Scan(&n); err != nil {
+		return 0, fmt.Errorf("govault: count %q: %w", prefix, err)
+	}
+	return n, nil
 }
 
 // prefixQuery appends a key range and liveness filter to selectStmt. A prefix
