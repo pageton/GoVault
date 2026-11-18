@@ -9,6 +9,11 @@
 //
 // A Store is safe for concurrent use by multiple goroutines:
 //
+//	import (
+//		"github.com/pageton/GoVault"
+//		_ "github.com/pageton/GoVault/purego" // registers the default SQLite driver
+//	)
+//
 //	v, err := govault.Open("app.vault")
 //	if err != nil {
 //		return err
@@ -19,7 +24,10 @@
 //		return err
 //	}
 //
-// All operations accept a context and abort when that context is cancelled.
+// The driver is chosen by the consuming project: govault/purego registers the
+// bundled pure-Go driver, WithDriver opens any registered database/sql
+// SQLite driver by name, and Attach adopts an existing *sql.DB. All
+// operations accept a context and abort when that context is cancelled.
 package govault
 
 import (
@@ -33,8 +41,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-
-	_ "modernc.org/sqlite" // registers the "sqlite" database/sql driver
 )
 
 // schemaStatements create the single table backing the store:
@@ -69,57 +75,136 @@ type Store struct {
 	janitorDone chan struct{}
 }
 
+// driverHint appears in errors caused by a missing driver registration.
+const driverHint = ` (did you forget to import a driver, e.g. _ "github.com/pageton/GoVault/purego"?)`
+
 // Open opens (creating if necessary) the SQLite database at path and returns
 // a ready-to-use Store. The parent directory of path must already exist.
 //
-// The database is opened in WAL mode with synchronous=NORMAL and an immediate
-// transaction lock, and runs one cleanup pass for keys that expired while the
-// store was closed. Unless disabled with WithJanitorInterval, a background
-// janitor keeps removing expired keys until Close is called.
+// Open requires a registered database/sql SQLite driver. The default driver
+// name is "sqlite"; import the govault/purego package to register the
+// bundled pure-Go driver, or pick your own with WithDriver. The database is
+// opened in WAL mode with synchronous=NORMAL and an immediate transaction
+// lock, and runs one cleanup pass for keys that expired while the store was
+// closed. Unless disabled with WithJanitorInterval, a background janitor
+// keeps removing expired keys until Close is called.
 func Open(path string, opts ...Option) (*Store, error) {
-	if path == "" {
-		return nil, errors.New("govault: path must not be empty")
-	}
 	cfg := defaultConfig()
 	for _, opt := range opts {
 		opt(&cfg)
 	}
+	switch {
+	case cfg.driverName == "" && cfg.dsn == "":
+		cfg.driverName = "sqlite" // bundled default, registered by govault/purego
+	case cfg.driverName != "" && cfg.dsn != "":
+		// caller-selected driver; the DSN is used verbatim below
+	default:
+		return nil, errors.New("govault: WithDriver requires both a driver name and a DSN")
+	}
+	if path == "" && cfg.dsn == "" {
+		return nil, errors.New("govault: path must not be empty")
+	}
+
 	// An in-memory database is private to each connection, so pin the pool to
 	// a single connection unless the caller made an explicit choice.
-	if isMemoryPath(path) && cfg.maxOpenConns == 0 {
+	target := cfg.dsn
+	if target == "" {
+		target = path
+	}
+	if isMemoryPath(target) && cfg.maxOpenConns == 0 {
 		cfg.maxOpenConns = 1
 	}
 
-	db, err := sql.Open("sqlite", dataSourceName(path, cfg))
+	dsn := cfg.dsn
+	if dsn == "" {
+		dsn = dataSourceName(path, cfg)
+	}
+	db, err := sql.Open(cfg.driverName, dsn)
 	if err != nil {
-		return nil, fmt.Errorf("govault: open %q: %w", path, err)
+		return nil, fmt.Errorf("govault: open with driver %q: %w%s", cfg.driverName, err, driverHint)
 	}
 	if cfg.maxOpenConns > 0 {
 		db.SetMaxOpenConns(cfg.maxOpenConns)
 	}
 
 	s := &Store{db: db, cfg: cfg}
-
 	ctx, cancel := context.WithTimeout(context.Background(), cfg.busyTimeout+5*time.Second)
 	defer cancel()
-	for _, stmt := range schemaStatements {
-		if _, err := db.ExecContext(ctx, stmt); err != nil {
-			db.Close()
-			return nil, fmt.Errorf("govault: initialize schema: %w", err)
-		}
-	}
-	stmts, err := prepareStmts(ctx, db)
-	if err != nil {
+	if err := s.setup(ctx, false); err != nil {
 		db.Close()
-		return nil, fmt.Errorf("govault: prepare statements: %w", err)
+		return nil, err
 	}
-	s.stmts = stmts
-	_, _ = s.purgeExpired(ctx) // best effort: keys that expired while closed
-
 	if cfg.janitorEnabled {
 		s.startJanitor()
 	}
 	return s, nil
+}
+
+// Attach builds a Store from an already-open *sql.DB, letting the consuming
+// project own driver selection, the DSN, and pool tuning. The database must
+// run in WAL mode (or be an in-memory database); Attach verifies this and
+// fails with setup instructions otherwise, because the documented concurrency
+// guarantees depend on it. The DSN that opened db should also set a busy
+// timeout and immediate transaction locking (see WithDriver for recipes).
+//
+// On success the Store takes ownership of db: Close also closes it. Pool
+// options such as WithMaxOpenConns are the caller's business and are
+// ignored here. Janitor options apply as usual.
+func Attach(db *sql.DB, opts ...Option) (*Store, error) {
+	if db == nil {
+		return nil, errors.New("govault: Attach requires a non-nil *sql.DB")
+	}
+	cfg := defaultConfig()
+	for _, opt := range opts {
+		opt(&cfg)
+	}
+
+	s := &Store{db: db, cfg: cfg}
+	ctx, cancel := context.WithTimeout(context.Background(), cfg.busyTimeout+5*time.Second)
+	defer cancel()
+	if err := s.setup(ctx, true); err != nil {
+		return nil, err // db is not ours to close: ownership passes only on success
+	}
+	if cfg.janitorEnabled {
+		s.startJanitor()
+	}
+	return s, nil
+}
+
+// setup creates the schema, optionally verifies the journal mode, prepares
+// statements, and purges keys that expired while the store was closed.
+func (s *Store) setup(ctx context.Context, verifyWALMode bool) error {
+	for _, stmt := range schemaStatements {
+		if _, err := s.db.ExecContext(ctx, stmt); err != nil {
+			return fmt.Errorf("govault: initialize schema: %w", err)
+		}
+	}
+	if verifyWALMode {
+		if err := s.verifyWAL(ctx); err != nil {
+			return err
+		}
+	}
+	stmts, err := prepareStmts(ctx, s.db)
+	if err != nil {
+		return fmt.Errorf("govault: prepare statements: %w", err)
+	}
+	s.stmts = stmts
+	_, _ = s.purgeExpired(ctx) // best effort: keys that expired while closed
+	return nil
+}
+
+// verifyWAL rejects databases not running WAL (or an in-memory journal),
+// since the API's concurrency guarantees depend on it.
+func (s *Store) verifyWAL(ctx context.Context) error {
+	var mode string
+	if err := s.db.QueryRowContext(ctx, "PRAGMA journal_mode").Scan(&mode); err != nil {
+		return fmt.Errorf("govault: read journal mode: %w", err)
+	}
+	switch strings.ToLower(mode) {
+	case "wal", "memory":
+		return nil
+	}
+	return fmt.Errorf("govault: attached database journal mode is %q, not WAL; enable it in the DSN (modernc: _pragma=journal_mode(WAL), mattn: _journal_mode=WAL)", mode)
 }
 
 // Close stops the janitor, checkpoints the WAL back into the main database
@@ -215,6 +300,8 @@ func dataSourceName(path string, cfg config) string {
 	)
 }
 
-func isMemoryPath(path string) bool {
-	return path == ":memory:" || strings.Contains(path, "mode=memory")
+// isMemoryPath reports whether the path or DSN targets an in-memory
+// database, which is private to each connection unless shared explicitly.
+func isMemoryPath(target string) bool {
+	return strings.Contains(target, ":memory:") || strings.Contains(target, "mode=memory")
 }

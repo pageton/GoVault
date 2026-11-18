@@ -36,8 +36,18 @@ value, err := v.Get(ctx, "session:abc") // → []byte("payload")
 go get github.com/pageton/GoVault
 ```
 
-GoVault uses [modernc.org/sqlite](https://pkg.go.dev/modernc.org/sqlite), a
-pure-Go (CGo-free) SQLite driver, so it cross-compiles anywhere Go does.
+```go
+import (
+	"github.com/pageton/GoVault"
+	_ "github.com/pageton/GoVault/purego" // registers the default SQLite driver
+)
+```
+
+The core library never imports a SQLite driver itself — your project picks
+one. The `govault/purego` package registers the bundled default,
+[modernc.org/sqlite](https://pkg.go.dev/modernc.org/sqlite): pure Go, no CGo,
+cross-compiles anywhere. Prefer another driver? See
+[Choosing the SQLite driver](#choosing-the-sqlite-driver).
 
 ## Usage
 
@@ -128,6 +138,41 @@ v, err := govault.Open("app.vault",
 )
 ```
 
+## Choosing the SQLite driver
+
+The driver comes from your project, not from GoVault. Three ways:
+
+**1. Default — pure Go, zero config.** Import the bundled registration package
+(no CGo, cross-compiles anywhere):
+
+```go
+import _ "github.com/pageton/GoVault/purego" // registers "sqlite" (modernc.org/sqlite)
+```
+
+**2. Any `database/sql` driver by name + DSN** — e.g. CGo-based
+[mattn/go-sqlite3](https://github.com/mattn/go-sqlite3) for maximum raw
+throughput. Your project imports the driver; GoVault never links it for you:
+
+```go
+import _ "github.com/mattn/go-sqlite3"
+
+v, err := govault.Open("", govault.WithDriver("sqlite3",
+	"file:app.db?_busy_timeout=5000&_journal_mode=WAL&_synchronous=NORMAL&_txlock=immediate"))
+```
+
+The DSN is passed through verbatim, so include the settings GoVault relies
+on: WAL journaling, a busy timeout, and `_txlock=immediate`.
+
+**3. Adopt an existing pool** with `Attach` — you keep full control of the
+DSN and pool tuning; GoVault verifies WAL is on (failing loudly with
+instructions if not) and takes ownership of the handle:
+
+```go
+db, err := sql.Open("sqlite3", "file:app.db?_journal_mode=WAL&_txlock=immediate")
+// ...
+v, err := govault.Attach(db) // v.Close() also closes db
+```
+
 ## Storage layout
 
 ```sql
@@ -185,8 +230,9 @@ go test -bench=. -benchmem ./...       # benchmarks
   arbitrary `[]byte` up to SQLite's ~1 GB blob limit (keep them small for
   latency).
 - The store directory must exist before `Open`.
-- Swapping in a CGo driver (e.g. `mattn/go-sqlite3`) is a future extension if
-  raw throughput ever trumps build portability.
+- The SQLite driver is chosen by the consuming project: `govault/purego`
+  (default, pure Go), `WithDriver` for any `database/sql` driver, or `Attach`
+  for an existing `*sql.DB`.
 
 ## License
 

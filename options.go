@@ -10,6 +10,8 @@ type config struct {
 	maxOpenConns    int
 	janitorEnabled  bool
 	janitorInterval time.Duration
+	driverName      string // database/sql driver to open; default "sqlite"
+	dsn             string // when set, used verbatim instead of the built-in DSN
 }
 
 func defaultConfig() config {
@@ -46,5 +48,26 @@ func WithJanitorInterval(d time.Duration) Option {
 			return
 		}
 		c.janitorInterval = d
+	}
+}
+
+// WithDriver opens the store with the given database/sql driver and DSN
+// instead of GoVault's built-in default. The consuming project imports the
+// driver it wants; GoVault only references it by name. Both arguments are
+// required, and the DSN is passed to the driver verbatim, so it must carry
+// the settings GoVault relies on. For github.com/mattn/go-sqlite3:
+//
+//	file:app.db?_busy_timeout=5000&_journal_mode=WAL&_synchronous=NORMAL&_txlock=immediate
+//
+// For modernc.org/sqlite with custom pragmas:
+//
+//	file:app.db?_txlock=immediate&_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)
+//
+// WithBusyTimeout does not apply to a caller-provided DSN. See also Attach
+// for handing over an already-open *sql.DB.
+func WithDriver(name, dsn string) Option {
+	return func(c *config) {
+		c.driverName = name
+		c.dsn = dsn
 	}
 }

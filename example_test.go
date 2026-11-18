@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/pageton/GoVault"
+	_ "github.com/pageton/GoVault/purego" // registers the default SQLite driver
 )
 
 func Example() {
