@@ -1,0 +1,8 @@
+# Database files created by tests and examples
+*.db
+*.db-wal
+*.db-shm
+
+# Go test artifacts
+*.test
+*.out
