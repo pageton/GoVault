@@ -4,7 +4,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	_ "github.com/pageton/GoVault/purego" // default driver for tests
+	_ "modernc.org/sqlite" // default driver for tests
 )
 
 // openTest opens a Store on a fresh temporary database and closes it when

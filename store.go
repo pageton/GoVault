@@ -11,7 +11,7 @@
 //
 //	import (
 //		"github.com/pageton/GoVault"
-//		_ "github.com/pageton/GoVault/purego" // registers the default SQLite driver
+//		_ "modernc.org/sqlite" // registers the recommended default driver
 //	)
 //
 //	v, err := govault.Open("app.vault")
@@ -24,10 +24,11 @@
 //		return err
 //	}
 //
-// The driver is chosen by the consuming project: govault/purego registers the
-// bundled pure-Go driver, WithDriver opens any registered database/sql
-// SQLite driver by name, and Attach adopts an existing *sql.DB. All
-// operations accept a context and abort when that context is cancelled.
+// GoVault ships no driver of its own: the consuming project imports whichever
+// database/sql SQLite driver it prefers (modernc.org/sqlite is the pure-Go
+// default), selects one by name with WithDriver, or adopts an existing
+// *sql.DB with Attach. All operations accept a context and abort when that
+// context is cancelled.
 package govault
 
 import (
@@ -76,18 +77,19 @@ type Store struct {
 }
 
 // driverHint appears in errors caused by a missing driver registration.
-const driverHint = ` (did you forget to import a driver, e.g. _ "github.com/pageton/GoVault/purego"?)`
+const driverHint = ` (did you forget to import a driver, e.g. _ "modernc.org/sqlite"?)`
 
 // Open opens (creating if necessary) the SQLite database at path and returns
 // a ready-to-use Store. The parent directory of path must already exist.
 //
 // Open requires a registered database/sql SQLite driver. The default driver
-// name is "sqlite"; import the govault/purego package to register the
-// bundled pure-Go driver, or pick your own with WithDriver. The database is
-// opened in WAL mode with synchronous=NORMAL and an immediate transaction
-// lock, and runs one cleanup pass for keys that expired while the store was
-// closed. Unless disabled with WithJanitorInterval, a background janitor
-// keeps removing expired keys until Close is called.
+// name is "sqlite", as registered by the recommended pure-Go driver
+// modernc.org/sqlite; import it (or any other driver) from the consuming
+// project, or pick one by name with WithDriver. The database is opened in
+// WAL mode with synchronous=NORMAL and an immediate transaction lock, and
+// runs one cleanup pass for keys that expired while the store was closed.
+// Unless disabled with WithJanitorInterval, a background janitor keeps
+// removing expired keys until Close is called.
 func Open(path string, opts ...Option) (*Store, error) {
 	cfg := defaultConfig()
 	for _, opt := range opts {
@@ -95,7 +97,7 @@ func Open(path string, opts ...Option) (*Store, error) {
 	}
 	switch {
 	case cfg.driverName == "" && cfg.dsn == "":
-		cfg.driverName = "sqlite" // bundled default, registered by govault/purego
+		cfg.driverName = "sqlite" // as registered by modernc.org/sqlite
 	case cfg.driverName != "" && cfg.dsn != "":
 		// caller-selected driver; the DSN is used verbatim below
 	default:

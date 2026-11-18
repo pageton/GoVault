@@ -39,12 +39,12 @@ go get github.com/pageton/GoVault
 ```go
 import (
 	"github.com/pageton/GoVault"
-	_ "github.com/pageton/GoVault/purego" // registers the default SQLite driver
+	_ "modernc.org/sqlite" // the recommended default driver: pure Go, no CGo
 )
 ```
 
-The core library never imports a SQLite driver itself — your project picks
-one. The `govault/purego` package registers the bundled default,
+GoVault ships no SQLite driver of its own — your project imports one
+directly, exactly like any `database/sql` program. The recommended default is
 [modernc.org/sqlite](https://pkg.go.dev/modernc.org/sqlite): pure Go, no CGo,
 cross-compiles anywhere. Prefer another driver? See
 [Choosing the SQLite driver](#choosing-the-sqlite-driver).
@@ -142,11 +142,11 @@ v, err := govault.Open("app.vault",
 
 The driver comes from your project, not from GoVault. Three ways:
 
-**1. Default — pure Go, zero config.** Import the bundled registration package
-(no CGo, cross-compiles anywhere):
+**1. Default — pure Go, zero config.** Import the driver directly from
+upstream (no CGo, cross-compiles anywhere):
 
 ```go
-import _ "github.com/pageton/GoVault/purego" // registers "sqlite" (modernc.org/sqlite)
+import _ "modernc.org/sqlite" // registers "sqlite"
 ```
 
 **2. Any `database/sql` driver by name + DSN** — e.g. CGo-based
@@ -172,6 +172,11 @@ db, err := sql.Open("sqlite3", "file:app.db?_journal_mode=WAL&_txlock=immediate"
 // ...
 v, err := govault.Attach(db) // v.Close() also closes db
 ```
+
+Because GoVault's packages import no driver, a project that never imports
+`modernc.org/sqlite` never compiles or links it — even though GoVault's own
+test suite uses it (it stays in `go.mod` purely as a test dependency, and
+module graph pruning keeps it out of consumers' builds).
 
 ## Storage layout
 
@@ -248,9 +253,9 @@ go test -bench=. -benchmem ./...       # benchmarks
   arbitrary `[]byte` up to SQLite's ~1 GB blob limit (keep them small for
   latency).
 - The store directory must exist before `Open`.
-- The SQLite driver is chosen by the consuming project: `govault/purego`
-  (default, pure Go), `WithDriver` for any `database/sql` driver, or `Attach`
-  for an existing `*sql.DB`.
+- The SQLite driver is chosen by the consuming project: import
+  `modernc.org/sqlite` (recommended pure-Go default) or any driver directly,
+  or use `WithDriver` / `Attach`. GoVault itself has no runtime dependencies.
 
 ## License
 

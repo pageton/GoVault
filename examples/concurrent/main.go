@@ -15,7 +15,7 @@ import (
 	"time"
 
 	"github.com/pageton/GoVault"
-	_ "github.com/pageton/GoVault/purego" // registers the default SQLite driver
+	_ "modernc.org/sqlite" // registers the default SQLite driver
 )
 
 const (

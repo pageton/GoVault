@@ -12,7 +12,7 @@ import (
 	"path/filepath"
 
 	"github.com/pageton/GoVault"
-	_ "github.com/pageton/GoVault/purego" // registers the default SQLite driver
+	_ "modernc.org/sqlite" // registers the default SQLite driver
 )
 
 var errSimulated = errors.New("simulated failure mid-batch")

@@ -19,7 +19,7 @@ import (
 	"strings"
 
 	"github.com/pageton/GoVault"
-	_ "github.com/pageton/GoVault/purego" // this project's driver choice
+	_ "modernc.org/sqlite" // this project's driver choice
 )
 
 func main() {
