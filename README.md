@@ -174,9 +174,8 @@ v, err := govault.Attach(db) // v.Close() also closes db
 ```
 
 Because GoVault's packages import no driver, a project that never imports
-`modernc.org/sqlite` never compiles or links it — even though GoVault's own
-test suite uses it (it stays in `go.mod` purely as a test dependency, and
-module graph pruning keeps it out of consumers' builds).
+`modernc.org/sqlite` never compiles or links it — the root module's `go.mod`
+carries zero dependencies (see [Repository layout](#repository-layout)).
 
 ## Storage layout
 
@@ -238,11 +237,26 @@ Run any of them with, e.g.:
 go run github.com/pageton/GoVault/examples/basic
 ```
 
+## Repository layout
+
+The library module at the root is dependency-free — its `go.mod` has no
+requires at all:
+
+- `/` — `github.com/pageton/GoVault`: the library, plus unit tests for the
+  pure internals
+- `/test` — a separate module holding the full integration suite and
+  benchmarks; it pulls in a real SQLite driver and pins the sibling library
+  with a `replace` directive
+- `/examples` — the runnable example programs, also a separate module
+- `go.work` — ties the three modules together, so commands like
+  `go run ./examples/basic` work from the repo root
+
 ## Testing
 
 ```sh
-go test -race ./...                    # full suite incl. concurrency + WAL behavior
-go test -bench=. -benchmem ./...       # benchmarks
+go test -race ./... ./test/...          # unit + integration suites
+go -C test test -coverpkg github.com/pageton/GoVault ./...   # library coverage (~92%)
+go -C test test -run '^$' -bench . -benchmem ./...           # benchmarks
 ```
 
 ## Notes & limits

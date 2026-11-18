@@ -1,4 +1,4 @@
-package govault
+package govaulttest
 
 import (
 	"context"
@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/pageton/GoVault"
 )
 
 // moderncDSN builds a modernc-dialect DSN with the settings GoVault expects,
@@ -17,7 +19,7 @@ func moderncDSN(path string) string {
 
 func TestWithDriverExplicit(t *testing.T) {
 	dsn := moderncDSN(filepath.Join(t.TempDir(), "explicit.db"))
-	s, err := Open("", WithDriver("sqlite", dsn))
+	s, err := govault.Open("", govault.WithDriver("sqlite", dsn))
 	if err != nil {
 		t.Fatalf("Open with explicit driver: %v", err)
 	}
@@ -33,7 +35,7 @@ func TestWithDriverExplicit(t *testing.T) {
 }
 
 func TestWithDriverUnregistered(t *testing.T) {
-	_, err := Open("", WithDriver("nosuchdriver", "file:x.db"))
+	_, err := govault.Open("", govault.WithDriver("nosuchdriver", "file:x.db"))
 	if err == nil || !strings.Contains(err.Error(), "unknown driver") {
 		t.Fatalf("Open with unregistered driver: got %v, want unknown-driver error", err)
 	}
@@ -44,7 +46,7 @@ func TestWithDriverRequiresBoth(t *testing.T) {
 		{"sqlite", ""},
 		{"", "file:x.db"},
 	} {
-		if _, err := Open("unused.db", WithDriver(tc.name, tc.dsn)); err == nil ||
+		if _, err := govault.Open("unused.db", govault.WithDriver(tc.name, tc.dsn)); err == nil ||
 			!strings.Contains(err.Error(), "WithDriver requires") {
 			t.Errorf("WithDriver(%q, %q): got %v, want usage error", tc.name, tc.dsn, err)
 		}
@@ -57,7 +59,7 @@ func TestAttach(t *testing.T) {
 		t.Fatalf("sql.Open: %v", err)
 	}
 
-	s, err := Attach(db)
+	s, err := govault.Attach(db)
 	if err != nil {
 		t.Fatalf("Attach: %v", err)
 	}
@@ -83,7 +85,7 @@ func TestAttach(t *testing.T) {
 }
 
 func TestAttachNilDB(t *testing.T) {
-	if _, err := Attach(nil); err == nil {
+	if _, err := govault.Attach(nil); err == nil {
 		t.Fatal("Attach(nil) should fail")
 	}
 }
@@ -95,7 +97,7 @@ func TestAttachRejectsNonWAL(t *testing.T) {
 	}
 	defer db.Close()
 
-	_, err = Attach(db)
+	_, err = govault.Attach(db)
 	if err == nil || !strings.Contains(err.Error(), "not WAL") {
 		t.Fatalf("Attach without WAL: got %v, want journal-mode error", err)
 	}

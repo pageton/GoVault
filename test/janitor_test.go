@@ -1,14 +1,17 @@
-package govault
+package govaulttest
 
 import (
 	"context"
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/pageton/GoVault"
 )
 
 func TestJanitorPurgesExpiredRows(t *testing.T) {
-	s := openTest(t, WithJanitorInterval(60*time.Millisecond))
+	s, path := openTest(t, govault.WithJanitorInterval(60*time.Millisecond))
+	raw := openRaw(t, path)
 	ctx := context.Background()
 
 	if err := s.Set(ctx, "ephemeral", []byte("v"), 80*time.Millisecond); err != nil {
@@ -21,7 +24,7 @@ func TestJanitorPurgesExpiredRows(t *testing.T) {
 	// The row must be physically deleted, not just hidden.
 	deadline := time.Now().Add(3 * time.Second)
 	for {
-		if n := rawRowCount(t, s, "SELECT COUNT(*) FROM kv WHERE key = ?", "ephemeral"); n == 0 {
+		if n := rawCount(t, raw, "SELECT COUNT(*) FROM kv WHERE key = ?", "ephemeral"); n == 0 {
 			break
 		}
 		if time.Now().After(deadline) {
@@ -29,13 +32,14 @@ func TestJanitorPurgesExpiredRows(t *testing.T) {
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	if n := rawRowCount(t, s, "SELECT COUNT(*) FROM kv WHERE key = ?", "durable"); n != 1 {
+	if n := rawCount(t, raw, "SELECT COUNT(*) FROM kv WHERE key = ?", "durable"); n != 1 {
 		t.Fatalf("janitor removed a non-expired row (count=%d)", n)
 	}
 }
 
 func TestJanitorDisabled(t *testing.T) {
-	s := openTest(t, WithJanitorInterval(0))
+	s, path := openTest(t, govault.WithJanitorInterval(0))
+	raw := openRaw(t, path)
 	ctx := context.Background()
 
 	if err := s.Set(ctx, "ephemeral", []byte("v"), 80*time.Millisecond); err != nil {
@@ -48,7 +52,7 @@ func TestJanitorDisabled(t *testing.T) {
 		t.Fatalf("Exists after expiry: got %v, %v", ok, err)
 	}
 	// ... but still on disk, waiting to be overwritten or purged later.
-	if n := rawRowCount(t, s, "SELECT COUNT(*) FROM kv WHERE key = ?", "ephemeral"); n != 1 {
+	if n := rawCount(t, raw, "SELECT COUNT(*) FROM kv WHERE key = ?", "ephemeral"); n != 1 {
 		t.Fatalf("expired row should remain on disk when janitor is off (count=%d)", n)
 	}
 }
@@ -58,7 +62,7 @@ func TestPurgeOnReopen(t *testing.T) {
 	ctx := context.Background()
 
 	// Close the store before the TTL elapses, with no janitor running.
-	s1, err := Open(path, WithJanitorInterval(0))
+	s1, err := govault.Open(path, govault.WithJanitorInterval(0))
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -74,15 +78,16 @@ func TestPurgeOnReopen(t *testing.T) {
 	time.Sleep(250 * time.Millisecond)
 
 	// Reopening purges keys that expired while the store was closed.
-	s2, err := Open(path)
+	s2, err := govault.Open(path)
 	if err != nil {
 		t.Fatalf("reopen: %v", err)
 	}
 	defer s2.Close()
-	if n := rawRowCount(t, s2, "SELECT COUNT(*) FROM kv WHERE key = ?", "ephemeral"); n != 0 {
+	raw := openRaw(t, path)
+	if n := rawCount(t, raw, "SELECT COUNT(*) FROM kv WHERE key = ?", "ephemeral"); n != 0 {
 		t.Fatalf("expired row survived reopen purge (count=%d)", n)
 	}
-	if n := rawRowCount(t, s2, "SELECT COUNT(*) FROM kv WHERE key = ?", "durable"); n != 1 {
+	if n := rawCount(t, raw, "SELECT COUNT(*) FROM kv WHERE key = ?", "durable"); n != 1 {
 		t.Fatalf("durable row lost on reopen (count=%d)", n)
 	}
 }

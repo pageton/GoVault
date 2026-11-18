@@ -1,4 +1,4 @@
-package govault
+package govaulttest
 
 import (
 	"bytes"
@@ -7,10 +7,12 @@ import (
 	"fmt"
 	"testing"
 	"time"
+
+	"github.com/pageton/GoVault"
 )
 
 func TestSetGet(t *testing.T) {
-	s := openTest(t)
+	s, _ := openTest(t)
 	ctx := context.Background()
 
 	if err := s.Set(ctx, "hello", []byte("world")); err != nil {
@@ -34,14 +36,14 @@ func TestSetGet(t *testing.T) {
 }
 
 func TestGetMissing(t *testing.T) {
-	s := openTest(t)
-	if _, err := s.Get(context.Background(), "nope"); !errors.Is(err, ErrKeyNotFound) {
+	s, _ := openTest(t)
+	if _, err := s.Get(context.Background(), "nope"); !errors.Is(err, govault.ErrKeyNotFound) {
 		t.Fatalf("Get missing key: got %v, want ErrKeyNotFound", err)
 	}
 }
 
 func TestSetEdgeCases(t *testing.T) {
-	s := openTest(t)
+	s, _ := openTest(t)
 	ctx := context.Background()
 
 	cases := []struct {
@@ -75,7 +77,7 @@ func TestSetEdgeCases(t *testing.T) {
 }
 
 func TestExists(t *testing.T) {
-	s := openTest(t)
+	s, _ := openTest(t)
 	ctx := context.Background()
 
 	if err := s.Set(ctx, "there", []byte("v")); err != nil {
@@ -96,7 +98,7 @@ func TestExists(t *testing.T) {
 }
 
 func TestDelete(t *testing.T) {
-	s := openTest(t)
+	s, _ := openTest(t)
 	ctx := context.Background()
 
 	for _, k := range []string{"a", "b", "c"} {
@@ -119,14 +121,14 @@ func TestDelete(t *testing.T) {
 		t.Fatalf("Delete multi: got %d, %v; want 2, nil", n, err)
 	}
 	for _, k := range []string{"a", "b", "c"} {
-		if _, err := s.Get(ctx, k); !errors.Is(err, ErrKeyNotFound) {
+		if _, err := s.Get(ctx, k); !errors.Is(err, govault.ErrKeyNotFound) {
 			t.Fatalf("Get %s after delete: got %v, want ErrKeyNotFound", k, err)
 		}
 	}
 }
 
 func TestTTL(t *testing.T) {
-	s := openTest(t)
+	s, _ := openTest(t)
 	ctx := context.Background()
 
 	// A TTL key is visible immediately and gone after it elapses.
@@ -140,7 +142,7 @@ func TestTTL(t *testing.T) {
 		t.Fatalf("Get before expiry: %v", err)
 	}
 	time.Sleep(300 * time.Millisecond)
-	if _, err := s.Get(ctx, "ephemeral"); !errors.Is(err, ErrKeyNotFound) {
+	if _, err := s.Get(ctx, "ephemeral"); !errors.Is(err, govault.ErrKeyNotFound) {
 		t.Fatalf("Get after expiry: got %v, want ErrKeyNotFound", err)
 	}
 	if ok, err := s.Exists(ctx, "ephemeral"); err != nil || ok {
@@ -178,19 +180,19 @@ func TestTTL(t *testing.T) {
 	if err := s.Set(ctx, "zero", []byte("v"), 0); err != nil {
 		t.Fatalf("Set zero TTL: %v", err)
 	}
-	if _, err := s.Get(ctx, "zero"); !errors.Is(err, ErrKeyNotFound) {
+	if _, err := s.Get(ctx, "zero"); !errors.Is(err, govault.ErrKeyNotFound) {
 		t.Fatalf("Get zero TTL: got %v, want ErrKeyNotFound", err)
 	}
 	if err := s.Set(ctx, "negative", []byte("v"), -time.Second); err != nil {
 		t.Fatalf("Set negative TTL: %v", err)
 	}
-	if _, err := s.Get(ctx, "negative"); !errors.Is(err, ErrKeyNotFound) {
+	if _, err := s.Get(ctx, "negative"); !errors.Is(err, govault.ErrKeyNotFound) {
 		t.Fatalf("Get negative TTL: got %v, want ErrKeyNotFound", err)
 	}
 }
 
 func TestKeys(t *testing.T) {
-	s := openTest(t)
+	s, _ := openTest(t)
 	ctx := context.Background()
 
 	for _, k := range []string{"b", "a:c", "a", "a:b:a", "c"} {
@@ -222,7 +224,7 @@ func TestKeys(t *testing.T) {
 }
 
 func TestScan(t *testing.T) {
-	s := openTest(t)
+	s, _ := openTest(t)
 	ctx := context.Background()
 
 	entries := map[string]string{
@@ -278,7 +280,7 @@ func TestScan(t *testing.T) {
 }
 
 func TestCount(t *testing.T) {
-	s := openTest(t)
+	s, _ := openTest(t)
 	ctx := context.Background()
 
 	if n, err := s.Count(ctx, ""); err != nil || n != 0 {
@@ -312,33 +314,10 @@ func TestCount(t *testing.T) {
 	}
 }
 
-func TestPrefixUpperBound(t *testing.T) {
-	cases := []struct {
-		prefix string
-		want   string
-		ok     bool
-	}{
-		{"", "", false}, // no bound: matches everything
-		{"a", "b", true},
-		{"abc", "abd", true},
-		{"a\x00", "a\x01", true},
-		{"a\xff", "b", true},
-		{"a\xff\xff", "b", true},
-		{"\xff\xff", "", false}, // no greater string exists
-	}
-	for _, tc := range cases {
-		got, ok := prefixUpperBound(tc.prefix)
-		if got != tc.want || ok != tc.ok {
-			t.Errorf("prefixUpperBound(%q): got (%q, %v), want (%q, %v)",
-				tc.prefix, got, ok, tc.want, tc.ok)
-		}
-	}
-}
-
 func TestScanByteOrderMatchesPrefixBound(t *testing.T) {
 	// Keys around the upper-bound seam of prefix "user:" must be included or
 	// excluded exactly.
-	s := openTest(t)
+	s, _ := openTest(t)
 	ctx := context.Background()
 	for _, k := range []string{"user:1", "user:\xff", "user;", "vser:"} {
 		if err := s.Set(ctx, k, []byte("v")); err != nil {

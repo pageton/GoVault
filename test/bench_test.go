@@ -1,4 +1,4 @@
-package govault
+package govaulttest
 
 import (
 	"context"
@@ -6,13 +6,15 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/pageton/GoVault"
 )
 
 // benchStore opens a Store on a fresh temporary database and pre-populates it
 // with size keys of the form "key:<n>%07d" mapped to 128-byte values.
-func benchStore(b *testing.B, size int) (*Store, []byte) {
+func benchStore(b *testing.B, size int) (*govault.Store, []byte) {
 	b.Helper()
-	s, err := Open(filepath.Join(b.TempDir(), "bench.db"))
+	s, err := govault.Open(filepath.Join(b.TempDir(), "bench.db"))
 	if err != nil {
 		b.Fatalf("Open: %v", err)
 	}
@@ -23,7 +25,7 @@ func benchStore(b *testing.B, size int) (*Store, []byte) {
 		value[i] = byte(i)
 	}
 	ctx := context.Background()
-	err = s.Batch(ctx, func(tx *Tx) error {
+	err = s.Batch(ctx, func(tx *govault.Tx) error {
 		for i := 0; i < size; i++ {
 			if err := tx.Set(ctx, fmt.Sprintf("key:%07d", i), value); err != nil {
 				return err
@@ -75,7 +77,7 @@ func BenchmarkGetMissing(b *testing.B) {
 	ctx := context.Background()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		if _, err := s.Get(ctx, "absent"); err != ErrKeyNotFound {
+		if _, err := s.Get(ctx, "absent"); err != govault.ErrKeyNotFound {
 			b.Fatal(err)
 		}
 	}
@@ -104,8 +106,8 @@ func BenchmarkDelete(b *testing.B) {
 }
 
 func BenchmarkScan100of1000(b *testing.B) {
-	// "key:0000099" is the 100th key with prefix "key:00000" in a table of
-	// 1000 keys, so each scan walks 100 streamed rows.
+	// "key:00000" is the prefix of exactly 100 of the 1000 keys, so each
+	// scan streams 100 rows.
 	s, _ := benchStore(b, 1000)
 	ctx := context.Background()
 	b.ResetTimer()
@@ -140,7 +142,7 @@ func BenchmarkBatch100Sets(b *testing.B) {
 	ctx := context.Background()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		err := s.Batch(ctx, func(tx *Tx) error {
+		err := s.Batch(ctx, func(tx *govault.Tx) error {
 			for j := 0; j < 100; j++ {
 				if err := tx.Set(ctx, fmt.Sprintf("batch:%d:%03d", i, j), value); err != nil {
 					return err

@@ -1,4 +1,4 @@
-package govault_test
+package govaulttest
 
 import (
 	"context"
@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/pageton/GoVault"
-	_ "modernc.org/sqlite" // registers the default SQLite driver
+	_ "modernc.org/sqlite" // the driver for the example
 )
 
 func Example() {

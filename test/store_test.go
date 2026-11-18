@@ -1,4 +1,4 @@
-package govault
+package govaulttest
 
 import (
 	"context"
@@ -8,10 +8,12 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/pageton/GoVault"
 )
 
 func TestOpenClose(t *testing.T) {
-	s := openTest(t)
+	s, _ := openTest(t)
 	ctx := context.Background()
 	if err := s.Set(ctx, "k", []byte("v")); err != nil {
 		t.Fatalf("Set: %v", err)
@@ -25,47 +27,47 @@ func TestOpenClose(t *testing.T) {
 }
 
 func TestOpenEmptyPath(t *testing.T) {
-	if _, err := Open(""); err == nil {
+	if _, err := govault.Open(""); err == nil {
 		t.Fatal("Open(\"\") should fail")
 	}
 }
 
 func TestOpenMissingDirectory(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "does", "not", "exist", "test.db")
-	if _, err := Open(path); err == nil {
+	if _, err := govault.Open(path); err == nil {
 		t.Fatal("Open on a path with a missing parent directory should fail")
 	}
 }
 
 func TestOpsAfterClose(t *testing.T) {
-	s := openTest(t)
+	s, _ := openTest(t)
 	ctx := context.Background()
 	if err := s.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
 
-	if _, err := s.Get(ctx, "k"); !errors.Is(err, ErrClosed) {
+	if _, err := s.Get(ctx, "k"); !errors.Is(err, govault.ErrClosed) {
 		t.Errorf("Get after Close: got %v, want ErrClosed", err)
 	}
-	if err := s.Set(ctx, "k", nil); !errors.Is(err, ErrClosed) {
+	if err := s.Set(ctx, "k", nil); !errors.Is(err, govault.ErrClosed) {
 		t.Errorf("Set after Close: got %v, want ErrClosed", err)
 	}
-	if _, err := s.Delete(ctx, "k"); !errors.Is(err, ErrClosed) {
+	if _, err := s.Delete(ctx, "k"); !errors.Is(err, govault.ErrClosed) {
 		t.Errorf("Delete after Close: got %v, want ErrClosed", err)
 	}
-	if _, err := s.Exists(ctx, "k"); !errors.Is(err, ErrClosed) {
+	if _, err := s.Exists(ctx, "k"); !errors.Is(err, govault.ErrClosed) {
 		t.Errorf("Exists after Close: got %v, want ErrClosed", err)
 	}
-	if _, err := s.Keys(ctx, ""); !errors.Is(err, ErrClosed) {
+	if _, err := s.Keys(ctx, ""); !errors.Is(err, govault.ErrClosed) {
 		t.Errorf("Keys after Close: got %v, want ErrClosed", err)
 	}
-	if err := s.Scan(ctx, "", func(string, []byte) bool { return true }); !errors.Is(err, ErrClosed) {
+	if err := s.Scan(ctx, "", func(string, []byte) bool { return true }); !errors.Is(err, govault.ErrClosed) {
 		t.Errorf("Scan after Close: got %v, want ErrClosed", err)
 	}
-	if _, err := s.Count(ctx, ""); !errors.Is(err, ErrClosed) {
+	if _, err := s.Count(ctx, ""); !errors.Is(err, govault.ErrClosed) {
 		t.Errorf("Count after Close: got %v, want ErrClosed", err)
 	}
-	if err := s.Batch(ctx, func(tx *Tx) error { return nil }); !errors.Is(err, ErrClosed) {
+	if err := s.Batch(ctx, func(tx *govault.Tx) error { return nil }); !errors.Is(err, govault.ErrClosed) {
 		t.Errorf("Batch after Close: got %v, want ErrClosed", err)
 	}
 }
@@ -73,7 +75,7 @@ func TestOpsAfterClose(t *testing.T) {
 func TestInMemory(t *testing.T) {
 	ctx := context.Background()
 
-	a, err := Open(":memory:")
+	a, err := govault.Open(":memory:")
 	if err != nil {
 		t.Fatalf("Open :memory:: %v", err)
 	}
@@ -86,12 +88,12 @@ func TestInMemory(t *testing.T) {
 	}
 
 	// A second in-memory store must not see the first one's data.
-	b, err := Open(":memory:")
+	b, err := govault.Open(":memory:")
 	if err != nil {
 		t.Fatalf("Open :memory:: %v", err)
 	}
 	defer b.Close()
-	if _, err := b.Get(ctx, "k"); !errors.Is(err, ErrKeyNotFound) {
+	if _, err := b.Get(ctx, "k"); !errors.Is(err, govault.ErrKeyNotFound) {
 		t.Fatalf("Get from second :memory: store: got %v, want ErrKeyNotFound", err)
 	}
 }
@@ -100,7 +102,7 @@ func TestPersistenceAcrossReopen(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "persist.db")
 	ctx := context.Background()
 
-	s1, err := Open(path)
+	s1, err := govault.Open(path)
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -114,7 +116,7 @@ func TestPersistenceAcrossReopen(t *testing.T) {
 		t.Fatalf("Close: %v", err)
 	}
 
-	s2, err := Open(path)
+	s2, err := govault.Open(path)
 	if err != nil {
 		t.Fatalf("reopen: %v", err)
 	}
@@ -131,12 +133,12 @@ func TestTwoStoresSameFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "shared.db")
 	ctx := context.Background()
 
-	a, err := Open(path)
+	a, err := govault.Open(path)
 	if err != nil {
 		t.Fatalf("open A: %v", err)
 	}
 	defer a.Close()
-	b, err := Open(path)
+	b, err := govault.Open(path)
 	if err != nil {
 		t.Fatalf("open B: %v", err)
 	}
@@ -158,7 +160,7 @@ func TestTwoStoresSameFile(t *testing.T) {
 
 func TestOpenFileURI(t *testing.T) {
 	path := "file:" + filepath.Join(t.TempDir(), "uri.db")
-	s, err := Open(path)
+	s, err := govault.Open(path)
 	if err != nil {
 		t.Fatalf("Open with file: URI: %v", err)
 	}
@@ -174,7 +176,7 @@ func TestOpenFileURI(t *testing.T) {
 }
 
 func TestWithMaxOpenConns(t *testing.T) {
-	s := openTest(t, WithMaxOpenConns(2))
+	s, _ := openTest(t, govault.WithMaxOpenConns(2))
 	ctx := context.Background()
 
 	var wg sync.WaitGroup
@@ -203,7 +205,7 @@ func TestWithMaxOpenConns(t *testing.T) {
 }
 
 func TestContextCancellation(t *testing.T) {
-	s := openTest(t)
+	s, _ := openTest(t)
 	ctx := context.Background()
 	if err := s.Set(ctx, "k", []byte("v")); err != nil {
 		t.Fatalf("Set: %v", err)
@@ -233,7 +235,7 @@ func TestContextCancellation(t *testing.T) {
 	if _, err := s.Count(cancelled, ""); !errors.Is(err, context.Canceled) {
 		t.Errorf("Count with cancelled context: got %v", err)
 	}
-	if err := s.Batch(cancelled, func(tx *Tx) error { return nil }); !errors.Is(err, context.Canceled) {
+	if err := s.Batch(cancelled, func(tx *govault.Tx) error { return nil }); !errors.Is(err, context.Canceled) {
 		t.Errorf("Batch with cancelled context: got %v", err)
 	}
 

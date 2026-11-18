@@ -1,4 +1,4 @@
-package govault
+package govaulttest
 
 import (
 	"context"
@@ -6,10 +6,12 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/pageton/GoVault"
 )
 
 func TestConcurrentOps(t *testing.T) {
-	s := openTest(t)
+	s, _ := openTest(t)
 	ctx := context.Background()
 
 	const goroutines = 8
@@ -57,7 +59,7 @@ func TestConcurrentOps(t *testing.T) {
 }
 
 func TestConcurrentBatches(t *testing.T) {
-	s := openTest(t)
+	s, _ := openTest(t)
 	ctx := context.Background()
 
 	const goroutines = 4
@@ -68,7 +70,7 @@ func TestConcurrentBatches(t *testing.T) {
 		wg.Add(1)
 		go func(g int) {
 			defer wg.Done()
-			err := s.Batch(ctx, func(tx *Tx) error {
+			err := s.Batch(ctx, func(tx *govault.Tx) error {
 				for i := 0; i < setsPerBatch; i++ {
 					key := fmt.Sprintf("g%d:%03d", g, i)
 					if err := tx.Set(ctx, key, []byte(key)); err != nil {
@@ -92,7 +94,7 @@ func TestConcurrentBatches(t *testing.T) {
 func TestConcurrentMixedWorkload(t *testing.T) {
 	// Writers, readers, and scanners hammering overlapping prefixes at the
 	// same time; every operation must succeed or report ErrKeyNotFound.
-	s := openTest(t)
+	s, _ := openTest(t)
 	ctx := context.Background()
 
 	const writers = 4
@@ -124,7 +126,7 @@ func TestConcurrentMixedWorkload(t *testing.T) {
 					return
 				default:
 				}
-				if _, err := s.Get(ctx, "shared:0:000"); err != nil && err != ErrKeyNotFound {
+				if _, err := s.Get(ctx, "shared:0:000"); err != nil && err != govault.ErrKeyNotFound {
 					t.Errorf("Get: %v", err)
 					return
 				}
@@ -152,14 +154,7 @@ func TestConcurrentMixedWorkload(t *testing.T) {
 		}
 	}()
 
-	// Let the writers finish, run the readers a moment longer, then stop.
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		workers.Wait()
-	}()
-	// The reader goroutines only stop on close(stop); wait for writers by
-	// counting instead. Give the mixed phase a bounded duration.
+	// Run the mixed phase until the writers finish, then stop the readers.
 	deadline := time.After(2 * time.Second)
 	for {
 		if n, err := s.Count(ctx, "shared:"); err != nil {
@@ -174,7 +169,7 @@ func TestConcurrentMixedWorkload(t *testing.T) {
 		}
 	}
 	close(stop)
-	<-done
+	workers.Wait()
 
 	if n, err := s.Count(ctx, "shared:"); err != nil || n != writers*keysPerWriter {
 		t.Fatalf("final Count: got %d, %v; want %d", n, err, writers*keysPerWriter)

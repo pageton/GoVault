@@ -1,4 +1,4 @@
-package govault
+package govaulttest
 
 import (
 	"context"
@@ -6,15 +6,17 @@ import (
 	"fmt"
 	"testing"
 	"time"
+
+	"github.com/pageton/GoVault"
 )
 
 var errDeliberate = errors.New("deliberate failure")
 
 func TestBatchCommit(t *testing.T) {
-	s := openTest(t)
+	s, _ := openTest(t)
 	ctx := context.Background()
 
-	err := s.Batch(ctx, func(tx *Tx) error {
+	err := s.Batch(ctx, func(tx *govault.Tx) error {
 		for _, k := range []string{"a", "b", "c"} {
 			if err := tx.Set(ctx, k, []byte(k)); err != nil {
 				return err
@@ -38,13 +40,13 @@ func TestBatchCommit(t *testing.T) {
 }
 
 func TestBatchRollback(t *testing.T) {
-	s := openTest(t)
+	s, _ := openTest(t)
 	ctx := context.Background()
 
 	if err := s.Set(ctx, "keep", []byte("me")); err != nil {
 		t.Fatalf("Set: %v", err)
 	}
-	err := s.Batch(ctx, func(tx *Tx) error {
+	err := s.Batch(ctx, func(tx *govault.Tx) error {
 		if err := tx.Set(ctx, "transient", []byte("x")); err != nil {
 			return err
 		}
@@ -56,7 +58,7 @@ func TestBatchRollback(t *testing.T) {
 	if !errors.Is(err, errDeliberate) {
 		t.Fatalf("Batch error: got %v, want errDeliberate", err)
 	}
-	if _, err := s.Get(ctx, "transient"); !errors.Is(err, ErrKeyNotFound) {
+	if _, err := s.Get(ctx, "transient"); !errors.Is(err, govault.ErrKeyNotFound) {
 		t.Fatalf("rolled-back write is visible: got %v", err)
 	}
 	if got, err := s.Get(ctx, "keep"); err != nil || string(got) != "me" {
@@ -65,7 +67,7 @@ func TestBatchRollback(t *testing.T) {
 }
 
 func TestBatchPanicRollsBack(t *testing.T) {
-	s := openTest(t)
+	s, _ := openTest(t)
 	ctx := context.Background()
 
 	func() {
@@ -74,7 +76,7 @@ func TestBatchPanicRollsBack(t *testing.T) {
 				t.Fatalf("Batch should re-panic the original value: got %v", r)
 			}
 		}()
-		_ = s.Batch(ctx, func(tx *Tx) error {
+		_ = s.Batch(ctx, func(tx *govault.Tx) error {
 			if err := tx.Set(ctx, "transient", []byte("x")); err != nil {
 				return err
 			}
@@ -83,13 +85,13 @@ func TestBatchPanicRollsBack(t *testing.T) {
 	}()
 
 	// The write made before the panic must not survive the rollback.
-	if _, err := s.Get(ctx, "transient"); !errors.Is(err, ErrKeyNotFound) {
+	if _, err := s.Get(ctx, "transient"); !errors.Is(err, govault.ErrKeyNotFound) {
 		t.Fatalf("write survived panic rollback: got %v", err)
 	}
 }
 
 func TestBatchOperations(t *testing.T) {
-	s := openTest(t)
+	s, _ := openTest(t)
 	ctx := context.Background()
 
 	for _, k := range []string{"p:1", "p:2", "q:1", "gone"} {
@@ -98,7 +100,7 @@ func TestBatchOperations(t *testing.T) {
 		}
 	}
 
-	err := s.Batch(ctx, func(tx *Tx) error {
+	err := s.Batch(ctx, func(tx *govault.Tx) error {
 		if n, err := tx.Delete(ctx, "gone"); err != nil || n != 1 {
 			return fmt.Errorf("tx.Delete: %d, %v", n, err)
 		}
@@ -136,7 +138,7 @@ func TestBatchOperations(t *testing.T) {
 }
 
 func TestBatchNilFn(t *testing.T) {
-	s := openTest(t)
+	s, _ := openTest(t)
 	if err := s.Batch(context.Background(), nil); err == nil {
 		t.Fatal("Batch(nil) should fail")
 	}
@@ -145,14 +147,14 @@ func TestBatchNilFn(t *testing.T) {
 func TestNestedBatchFails(t *testing.T) {
 	// A nested Batch cannot take the write lock the outer one already holds;
 	// it must fail with the busy timeout instead of deadlocking.
-	s := openTest(t, WithBusyTimeout(150*time.Millisecond))
+	s, _ := openTest(t, govault.WithBusyTimeout(150*time.Millisecond))
 	ctx := context.Background()
 
-	err := s.Batch(ctx, func(tx *Tx) error {
+	err := s.Batch(ctx, func(tx *govault.Tx) error {
 		if err := tx.Set(ctx, "outer", []byte("v")); err != nil {
 			return err
 		}
-		inner := s.Batch(ctx, func(tx *Tx) error {
+		inner := s.Batch(ctx, func(tx *govault.Tx) error {
 			return tx.Set(ctx, "inner", []byte("v"))
 		})
 		if inner == nil {
@@ -171,7 +173,7 @@ func TestNestedBatchFails(t *testing.T) {
 func TestReadDuringOpenBatch(t *testing.T) {
 	// WAL mode: readers proceed while a write transaction is open, seeing the
 	// pre-transaction snapshot.
-	s := openTest(t)
+	s, _ := openTest(t)
 	ctx := context.Background()
 
 	if err := s.Set(ctx, "committed", []byte("before")); err != nil {
@@ -182,7 +184,7 @@ func TestReadDuringOpenBatch(t *testing.T) {
 	release := make(chan struct{})
 	batchErr := make(chan error, 1)
 	go func() {
-		batchErr <- s.Batch(ctx, func(tx *Tx) error {
+		batchErr <- s.Batch(ctx, func(tx *govault.Tx) error {
 			if err := tx.Set(ctx, "pending", []byte("during")); err != nil {
 				return err
 			}
@@ -196,7 +198,7 @@ func TestReadDuringOpenBatch(t *testing.T) {
 	if got, err := s.Get(ctx, "committed"); err != nil || string(got) != "before" {
 		t.Errorf("read during open write tx: got %q, %v", got, err)
 	}
-	if _, err := s.Get(ctx, "pending"); !errors.Is(err, ErrKeyNotFound) {
+	if _, err := s.Get(ctx, "pending"); !errors.Is(err, govault.ErrKeyNotFound) {
 		t.Errorf("uncommitted write is visible outside tx: got %v", err)
 	}
 	close(release)
